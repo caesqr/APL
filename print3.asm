@@ -46,7 +46,7 @@ dd 0							; LoaderFlags
 dd 16							; NumberOfRVAAndSizes
 
 dq 0							; export table
-dd 0x107A						; import table RVA
+dd 0x1093						; import table RVA
 dd 0							; import table size
 times 14 dq 0					; other tables
 
@@ -81,6 +81,7 @@ endofheader: times (0x1000-(endofheader-start)) db 0
 db "kernel32.dll"
 db 0, 0, "CreateFileA"
 db 0, 0, "ExitProcess"
+db 0, 0, "GetCommandLineA"
 db 0, 0, "GetStdHandle"
 db 0, 0, "ReadFile"
 db 0, 0, "WriteFile", 0
@@ -88,9 +89,10 @@ db 0, 0, "WriteFile", 0
 ; IMPORT ADDRESS TABLE
 CreateFileA: dq 0x100C
 ExitProcess: dq 0x1019
-GetStdHandle: dq 0x1026
-ReadFile: dq 0x1034
-WriteFile: dq 0x103E
+GetCommandLineA: dq 0x1026
+GetStdHandle: dq 0x1037
+ReadFile: dq 0x1045
+WriteFile: dq 0x104F
 dq 0
 
 ; IMPORT DIRECTORY TABLE
@@ -98,7 +100,7 @@ dd 0							; Import Lookup Table RVA
 dd 0							; Time/Date Stamp
 dd 0							; Forwarder Chain
 dd 0x1000						; Name RVA
-dd 0x104A						; Import Address Table RVA
+dd 0x105B						; Import Address Table RVA
 times 20 db 0
 
 ; DATA
@@ -112,7 +114,7 @@ endoftext: times (0x2000-(endoftext-start)) db 0
 BITS 64
 DEFAULT REL
 
-; READ
+; GET READ HANDLE
 sub rsp, 56
 lea rcx, [filename1]			; lpFileName
 mov edx, 0x80000000				; dwDesiredAccess
@@ -122,22 +124,9 @@ mov dword [rsp+32], 3			; dwCreationDisposition
 mov dword [rsp+40], 0x80		; dwFlagsAndAttributes
 mov qword [rsp+48], 0			; hTemplateFile
 call [CreateFileA]
-
 mov rbx, rax
-xor esi, esi
-READ:
-mov rcx, rbx					; hFile
-lea rdx, [buffer]				; lpBuffer
-mov r8d, 256					; nNumberOfBytesToRead
-lea r9, [rsp+40]				; lpNumberOfBytesRead
-mov qword [rsp+32], 0			; lpOverlapped
-call [ReadFile]
-mov ebp, [rsp+40]
-add esi, ebp
-cmp ebp, 256
-jz READ
 
-; WRITE
+; GET WRITE HANDLE
 lea rcx, [filename2]			; lpFileName
 mov edx, 0x40000000				; dwDesiredAccess
 xor r8d, r8d					; dwShareMode
@@ -146,17 +135,27 @@ mov dword [rsp+32], 2			; dwCreationDisposition
 mov dword [rsp+40], 0x80		; dwFlagsAndAttributes
 mov qword [rsp+48], 0			; hTemplateFile
 call [CreateFileA]
+mov rbp, rax
 
-mov rcx, rax					; hFile
+; READ AND WRITE BY CHUNKS
+PARSE:
+mov rcx, rbx					; hFile
 lea rdx, [buffer]				; lpBuffer
-mov r8d, esi					; nNumberOfBytesToWrite
+mov r8d, 256					; nNumberOfBytesToRead
+lea r9, [rsp+40]				; lpNumberOfBytesRead
+mov qword [rsp+32], 0			; lpOverlapped
+call [ReadFile]
+
+mov rcx, rbp					; hFile
+lea rdx, [buffer]				; lpBuffer
+mov r8d, [rsp+40]				; nNumberOfBytesToWrite
 lea r9, [rsp+40]				; lpNumberOfBytesWritten
 mov qword [rsp+32], 0			; lpOverlapped
 call [WriteFile]
-add rsp, 56
+cmp dword [rsp+40], 256
+jz PARSE
 
 xor ecx, ecx
-sub rsp, 40
 call [ExitProcess]
 
 
