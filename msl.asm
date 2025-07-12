@@ -111,9 +111,11 @@ readfilehandle dq 0
 writefilehandle dq 0
 writecounter dq 0
 stackcounter dq 0
-buffer1 times 0x1000 db 0
-buffer2 times 0x1000 db 0
-buffer3 times 0x4000 db 0
+symbolcounter dq 0
+readbuffer times 0x500 db 0
+writebuffer times 0x500 db 0
+symbolbuffer times 0x2000 db 0
+logicbuffer times 0x1000 db 0
 
 readfilename db "compile.txt", 0
 writefilename db "compile.exe", 0
@@ -121,6 +123,8 @@ exefilename db "msl.exe", 0
 errorcode1 db "Compile.txt not found", 0
 errorcode2 db "Compile.exe not modifiable", 0
 errorcode3 db "Invalid syntax", 0
+
+buffer: times 16 db 0
 
 endoftext: times (0x8000-(endoftext-start)) db 0
 
@@ -175,96 +179,173 @@ add rsp, 56
 cmp rax, -1
 jz error1
 
-sub rsp, 56						; copy PE headers in buffer2
+sub rsp, 56+0x1000				; copy PE headers in the stack
 mov rcx, rax
-lea rdx, [buffer2]
+lea rdx, [rsp+56]
 mov r8, 0x1000
 lea r9, [rsp+40]
 mov qword [rsp+32], 0
 call [ReadFile]
-add rsp, 56
 
-xor r12, r12					; initialize
-mov r14, 0x1000
-xor r15, r15
-
-readloop:						; update buffer1
-mov r13, -1
-sub rsp, 56
-mov qword rcx, [readfilehandle]
-lea rdx, [buffer1]
+mov rcx, [writefilehandle]		; copy stack to output file
+lea rdx, [rsp+56]
 mov r8, 0x1000
 lea r9, [rsp+40]
 mov qword [rsp+32], 0
-mov r10, 0x1000
-call [ReadFile]
-mov r15, [rsp+40]
-add rsp, 56
+call [WriteFile]
+add rsp, 56+0x1000
 
-decodeloop:						; find decode path of each statement
-test r15, r15					; check if bytes read is 0
-jz writeloop
-cmp r14, 0xC00					; check if write is needed
-jnc writeloop
-inc r13
-cmp r13, r15					; check if read buffer needs to update
-jz readloop
-lea r8, [buffer1]
-add r8, r13
-mov bl, [r8]
-cmp rbp, 1						; check if dlllogic is processing
-jz dlllogic
-cmp bl, 33						; check if whitespace
-jc decodeloop
-cmp bl, '#'						; check if dll
-jz dlllogic
-cmp bl, '['						; check if label
-jz labellogic
-cmp bl, '?'						; check if if statement
-jz iflogic
-cmp bl, 'A'						; check if function
-jc error3
-cmp bl, 91
-jc functionlogic
-cmp bl, 'a'
-jc error3
-cmp bl, 123
-jc functionlogic
-jmp error3
+xor rbp, rbp					; initialize
+xor r12, r12
+xor r13, r13
+xor r14, r14
+mov r15, 0x1000
+xor rbp, rbp
+xor rsi, rsi
+xor rdi, rdi
 
-dlllogic:						; dll logic
-lea rdi, [buffer2]
-mov [rdi+r14*1+0], bl
-inc r14
-mov rbp, 1
-jmp decodeloop
-
-labellogic:						; label logic
-
-iflogic:						; if statement logic
-
-functionlogic:					; function logic
-
-writeloop:						; write buffer2 to file
-cmp r14, 0
-jz exit
-sub rsp, 56
+statement_new:
+sub rsp, 56						; write previous statement to output file
 mov rcx, [writefilehandle]
-lea rdx, [buffer2]
+lea rdx, [writebuffer]
 mov r8, r14
 lea r9, [rsp+40]
 mov qword [rsp+32], 0
 call [WriteFile]
-add rsp, 56
-mov rax, [writecounter]
-add rax, r14
-mov qword [writecounter], rax
+add r15, r14
 xor r14, r14
-jmp decodeloop
+
+add r12, r13					; move file pointer to next statement
+mov rcx, [readfilehandle]
+mov rdx, r12
+xor r8, r8
+xor r9, r9
+call [SetFilePointer]
+xor r13, r13
+
+mov rcx, [readfilehandle]		; load new statement in readbuffer
+lea rdx, [readbuffer]
+mov r8, 0x500
+lea r9, [rsp+40]
+mov qword [rsp+32], 0
+call [ReadFile]
+mov r8, [rsp+40]
+add rsp, 56
+test r8, r8
+jz exit
+
+xor rcx, rcx					; find end of new statement
+xor rdx, rdx
+lea rax, [readbuffer]
+statement_findend:
+inc rdx
+cmp rdx, r8						; check if read ended
+jz statement_endfound
+mov bl, [rax+rdx*1+0]
+cmp bl, 92						; quote and blackslash management (92 is backslash, 34 is quote)
+jnz statement_nobackslash
+btc rcx, 1
+jmp statement_findend
+statement_nobackslash:
+cmp bl, 34
+jnz statement_noquote
+bt rcx, 1
+jnc statement_acceptquote
+btr rcx, 1
+jmp statement_findend
+statement_acceptquote:
+btc rcx, 0
+statement_noquote:
+btr rcx, 1
+bt rcx, 0
+jc statement_findend
+cmp bl, '#'
+jz statement_endfound
+cmp bl, '@'
+jz statement_endfound
+cmp bl, '$'
+jz statement_endfound
+cmp bl, ':'
+jz statement_endfound
+cmp bl, '?'
+jz statement_endfound
+jmp statement_findend
+statement_endfound:
+mov byte [rax+rdx*1+0], 0		; replace statement end with null byte
+mov bl, [rax]
+lea rcx, [writebuffer]
+
+cmp bl, '#'
+jnz nodll
+inc r13							; copy dll name in logicbuffer
+xor rax, rax
+dllname:
 
 
-; EXIT
-exit:
+
+nodll:
+cmp bl, '@'
+jnz noaddress
+
+noaddress:
+cmp bl, '$'
+jnz nofunction
+
+nofunction:
+cmp bl, ':'
+jnz nocall
+
+nocall:
+cmp bl, '?'
+jnz error3
+
+
+
+linksymbol:						; links the symbol name pointed by rax (at location rsp) to the symbol table and returns to r8
+mov rcx, 5381					; hash the string in rax
+movzx rdx, byte [rax]
+hash9:
+lea rcx, [rcx+rcx*8+0]
+add rcx, rdx
+inc rax
+movzx rdx, byte [rax]
+test dl, dl
+jnz hash9
+and rcx, 0xFF
+lea rax, [symbolbuffer]			; find last symbol in respective bucket
+lea rcx, [rcx*8]
+lea rax, [rax+rcx*4+32]
+searchlastsymbol:
+mov rcx, [rax+8]
+test rcx, rcx
+jnz searchlastsymbol
+mov rsp, [rax+8]				; link last symbol to rsp
+jmp r8
+
+findsymbol:						; returns the address of the symbol whose name is pointed by rax
+mov rcx, 5381					; hash the string in rax
+movzx rdx, byte [rax]
+hash92:
+lea rcx, [rcx+rcx*8+0]
+add rcx, rdx
+inc rax
+movzx rdx, byte [rax]
+test dl, dl
+jnz hash9
+and rcx, 0xFF
+lea rax, [symbolbuffer]			; find symbol in respective bucket
+lea rcx, [rcx*8]
+lea rax, [rax+rcx*4+32]
+searchsymbol:
+mov rcx, [rax-8]
+test rcx, rcx
+jnz searchsymbol
+mov rsp, [rax-8]
+jmp r8
+
+
+
+exit:							; exit
 sub rsp, 56
 xor rcx, rcx
 call [ExitProcess]
