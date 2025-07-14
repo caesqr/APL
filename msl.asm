@@ -73,6 +73,8 @@ dw 0							; NumberOfRelocations
 dw 0							; NumberOfLineNumbers
 dd 0x60000020					; Characteristics
 
+
+
 endofheader: times (0x1000-(endofheader-start)) db 0
 
 ; DLL AND FUNCTION NAMES
@@ -109,13 +111,10 @@ times 20 db 0
 stdhandleout dq 0
 readfilehandle dq 0
 writefilehandle dq 0
-writecounter dq 0
-stackcounter dq 0
-symbolcounter dq 0
 readbuffer times 0x500 db 0
 writebuffer times 0x500 db 0
-symbolbuffer times 0x2000 db 0
-logicbuffer times 0x1000 db 0
+symbolbuffer times 0x800 db 0
+store times 0x1000 db 0
 
 readfilename db "compile.txt", 0
 writefilename db "compile.exe", 0
@@ -123,23 +122,25 @@ exefilename db "msl.exe", 0
 errorcode1 db "Compile.txt not found", 0
 errorcode2 db "Compile.exe not modifiable", 0
 errorcode3 db "Invalid syntax", 0
+errorcode4 db "Imports must be at the start of the file", 0
 
-buffer: times 16 db 0
+intbuffer times 30 db 0
+
+
 
 endoftext: times (0x8000-(endoftext-start)) db 0
 
 ; CODE
 BITS 64
 DEFAULT REL
+sub rsp, 8
 
-sub rsp, 56						; get stdhandleout for error printing
+sub rsp, 64						; get stdhandleout for error printing
 mov rcx, -11
 call [GetStdHandle]
 mov [stdhandleout], rax
-add rsp, 56
 
-sub rsp, 56						; get read file handle
-lea rcx, [readfilename]
+lea rcx, [readfilename]			; get read file handle
 mov rdx, 0x80000000
 xor r8, r8
 xor r9, r9
@@ -147,13 +148,11 @@ mov dword [rsp+32], 3
 mov dword [rsp+40], 0x80
 mov qword [rsp+48], 0
 call [CreateFileA]
-add rsp, 56
 cmp rax, -1
 jz error1
 mov qword [readfilehandle], rax
 
-sub rsp, 56						; get write file handle
-lea rcx, [writefilename]
+lea rcx, [writefilename]		; get write file handle
 mov rdx, 0x40000000
 xor r8, r8
 xor r9, r9
@@ -161,13 +160,11 @@ mov dword [rsp+32], 2
 mov dword [rsp+40], 0x80
 mov qword [rsp+48], 0
 call [CreateFileA]
-add rsp, 56
 cmp rax, -1
 jz error2
 mov qword [writefilehandle], rax
 
-sub rsp, 56						; get executable handle
-lea rcx, [exefilename]
+lea rcx, [exefilename]			; get executable handle
 mov rdx, 0x80000000
 xor r8, r8
 xor r9, r9
@@ -175,11 +172,11 @@ mov dword [rsp+32], 3
 mov dword [rsp+40], 0x80
 mov qword [rsp+48], 0
 call [CreateFileA]
-add rsp, 56
 cmp rax, -1
 jz error1
+add rsp, 64
 
-sub rsp, 56+0x1000				; copy PE headers in the stack
+sub rsp, 64+0x1000				; copy PE headers in the stack
 mov rcx, rax
 lea rdx, [rsp+56]
 mov r8, 0x1000
@@ -193,96 +190,167 @@ mov r8, 0x1000
 lea r9, [rsp+40]
 mov qword [rsp+32], 0
 call [WriteFile]
-add rsp, 56+0x1000
+add rsp, 64+0x1000
 
-xor rbp, rbp					; initialize
-xor r12, r12
-xor r13, r13
-xor r14, r14
-mov r15, 0x1000
-xor rbp, rbp
-xor rsi, rsi
-xor rdi, rdi
 
-statement_new:
-sub rsp, 56						; write previous statement to output file
+
+lea rsi, [readbuffer]			; initialize
+lea rdi, [writebuffer]
+xor rbp, rbp					; status flags
+xor r12, r12					; read bytes
+xor r13, r13					; written bytes
+xor r14, r14					; (runtime) register cycle
+xor r15, r15					; (runtime) stack counter
+
+newstatement:
+sub rsp, 48						; write previous statement to output file
 mov rcx, [writefilehandle]
 lea rdx, [writebuffer]
-mov r8, r14
+mov r8, rdi
+sub r8, rdx
+add r13, r8
 lea r9, [rsp+40]
 mov qword [rsp+32], 0
 call [WriteFile]
-add r15, r14
-xor r14, r14
 
-add r12, r13					; move file pointer to next statement
-mov rcx, [readfilehandle]
+mov rcx, [readfilehandle]		; move file pointer to next statement
+mov rax, rsi
+lea rbx, [readbuffer]
+sub rax, rbx
+add r12, rax
 mov rdx, r12
 xor r8, r8
 xor r9, r9
 call [SetFilePointer]
-xor r13, r13
 
 mov rcx, [readfilehandle]		; load new statement in readbuffer
 lea rdx, [readbuffer]
-mov r8, 0x500
+mov r8, 0x4FF
 lea r9, [rsp+40]
 mov qword [rsp+32], 0
 call [ReadFile]
-mov r8, [rsp+40]
-add rsp, 56
-test r8, r8
+mov eax, [rsp+40]
+add rsp, 48
+test rax, rax
 jz exit
 
-xor rcx, rcx					; find end of new statement
-xor rdx, rdx
-lea rax, [readbuffer]
-statement_findend:
-inc rdx
-cmp rdx, r8						; check if read ended
-jz statement_endfound
-mov bl, [rax+rdx*1+0]
-cmp bl, 92						; quote and blackslash management (92 is backslash, 34 is quote)
-jnz statement_nobackslash
-btc rcx, 1
-jmp statement_findend
-statement_nobackslash:
-cmp bl, 34
-jnz statement_noquote
-bt rcx, 1
-jnc statement_acceptquote
-btr rcx, 1
-jmp statement_findend
-statement_acceptquote:
-btc rcx, 0
-statement_noquote:
-btr rcx, 1
-bt rcx, 0
-jc statement_findend
-cmp bl, '#'
-jz statement_endfound
-cmp bl, '@'
-jz statement_endfound
-cmp bl, '$'
-jz statement_endfound
-cmp bl, ':'
-jz statement_endfound
-cmp bl, '?'
-jz statement_endfound
-jmp statement_findend
-statement_endfound:
-mov byte [rax+rdx*1+0], 0		; replace statement end with null byte
-mov bl, [rax]
-lea rcx, [writebuffer]
+lea rsi, [readbuffer]			; initialize read and write addresses and character register
+mov byte [rsi+rax], 0			; null-terminate readbuffer
+lea rdi, [writebuffer]
+mov al, [rsi]
 
-cmp bl, '#'
+
+
+cmp al, '#'						; check if dll statement
 jnz nodll
-inc r13							; copy dll name in logicbuffer
-xor rax, rax
-dllname:
+bt rbp, 0
+jc error4
 
+dllfirstquote:					; find first quote for dll name
+inc rsi
+mov al, [rsi]
+cmp al, 34
+jnz dllfirstquote
+inc rsi							; find last quote while copying the name in writebuffer
+mov al, [rsi]
+mov rbx, rdi					; save current write position to copy the string in the stack later
+dlllastquote:
+mov [rdi], al
+inc rdi
+inc rsi
+mov al, [rsi]
+cmp al, 34
+jnz dlllastquote
+mov rdx, rdi					; copy dll name in stack
+sub rdx, rbx
+sub rsp, rdx
+and rsp, -16
+xor rcx, rcx
+dllstackcopy:
+mov al, [rbx+rcx]
+mov [rsp+rcx], al
+inc rcx
+cmp rcx, rdx
+jnz dllstackcopy
+mov byte [rsp+rcx], 0			; null-terminate stack string
+lea r11, [dllcreated]			; create dll symbol
+jmp createsymbol
+dllcreated:						; make symbol description
+mov rax, 15						; type field is 15 for dll
+mov rbx, r13					; stack/code address field is written bytes (r13)
+shl rbx, 32
+and rax, rbx
+mov [rsp+8], rax
 
+dllopenparenthesis:				; find open parenthesis
+inc rsi
+mov al, [rsi]
+cmp al, 40
+jnz dllopenparenthesis
+dllprefunction:					; find function name by skipping whitespaces and commas
+inc rsi
+mov al, [rsi]
+cmp al, 33
+jc dllprefunction
+cmp al, 44
+jz dllprefunction
+mov word [rdi], 0				; add function to writebuffer
+add rdi, 2
+mov rbx, rdi					; save rdi to put in stack/code address field and copy function to stack later
+mov al, [rsi]
+dllfunction:
+mov [rdi], al
+inc rsi
+inc rdi
+mov al, [rsi]
+cmp al, 33
+jc dllfunctionend
+cmp al, 41
+jz dllfunctionend
+cmp al, 44
+jz dllfunctionend
+jmp dllfunction
+dllfunctionend:
+mov rdx, rdi					; copy the function name in stack
+sub rdx, rbx
+sub rsp, rdx
+and rsp, -16
+xor rcx, rcx
+dllfunctionstackcopy:
+mov al, [rbx+rcx]
+mov [rsp+rcx], al
+inc rcx
+cmp rcx, rdx
+jnz dllfunctionstackcopy
+lea r11, [dllfunctioncreated]
+jmp createsymbol
+dllfunctioncreated:				; make symbol description
+mov rax, 16						; type field is 16 for dllfunctions
+sub rbx, 2						; stack/code address field is written bytes (r13) plus relative position in writebuffer
+lea rcx, [writebuffer]
+sub rbx, rcx
+add rbx, r13
+sub rbx, 2
+shl rbx, 32
+and rax, rbx
+mov [rsp+8], rax
+mov al, [rsi]					; check if there's the last parenthesis
+cmp al, 41
+jnz dllprefunction
+mov byte [rdi], 0				; null-terminate last function name
+inc rdi
 
+dllnextstatement:				; go to next statement after dll statement
+inc rsi
+mov al, [rsi]
+test al, al
+jz newstatement
+cmp al, 33
+jc dllnextstatement
+cmp al, 35
+jz newstatement
+								; next statement is not a dll statement (to be continued)
+jmp newstatement
 nodll:
 cmp bl, '@'
 jnz noaddress
@@ -299,89 +367,98 @@ nocall:
 cmp bl, '?'
 jnz error3
 
-
-
-linksymbol:						; links the symbol name pointed by rax (at location rsp) to the symbol table and returns to r8
-mov rcx, 5381					; hash the string in rax
-movzx rdx, byte [rax]
+createsymbol:					; links the symbol name pointed by rsp to the symbol table (new symbol is at rsp, after doing rsp-32) and returns to r11
+mov r10, rsp
+mov r9, 5381					; hash the string in r10
+movzx r8, byte [r10]
 hash9:
-lea rcx, [rcx+rcx*8+0]
-add rcx, rdx
-inc rax
-movzx rdx, byte [rax]
-test dl, dl
+lea r9, [r9+r9*8+0]
+add r9, r8
+inc r10
+movzx r8, byte [r10]
+test r8, r8
 jnz hash9
-and rcx, 0xFF
-lea rax, [symbolbuffer]			; find last symbol in respective bucket
-lea rcx, [rcx*8]
-lea rax, [rax+rcx*4+32]
+and r9, 0xFF
+lea r10, [symbolbuffer]			; find last symbol in respective bucket
+lea r10, [r10+r9*8+0]
 searchlastsymbol:
-mov rcx, [rax+8]
-test rcx, rcx
+mov r9, r10
+mov r10, [r10]
+test r10, r10
 jnz searchlastsymbol
-mov rsp, [rax+8]				; link last symbol to rsp
-jmp r8
-
-findsymbol:						; returns the address of the symbol whose name is pointed by rax
-mov rcx, 5381					; hash the string in rax
-movzx rdx, byte [rax]
-hash92:
-lea rcx, [rcx+rcx*8+0]
-add rcx, rdx
-inc rax
-movzx rdx, byte [rax]
-test dl, dl
-jnz hash9
-and rcx, 0xFF
-lea rax, [symbolbuffer]			; find symbol in respective bucket
-lea rcx, [rcx*8]
-lea rax, [rax+rcx*4+32]
-searchsymbol:
-mov rcx, [rax-8]
-test rcx, rcx
-jnz searchsymbol
-mov rsp, [rax-8]
-jmp r8
-
-
+sub rsp, 16						; create new symbol and link to last symbol
+mov [r9], rsp
+mov qword [rsp], 0
+jmp r11
 
 exit:							; exit
-sub rsp, 56
+sub rsp, 32
 xor rcx, rcx
 call [ExitProcess]
 
-; ERRORS
-error1:
-sub rsp, 56
+error1:							; compile.txt not found
+sub rsp, 48
 mov rcx, [stdhandleout]
 lea rdx, [errorcode1]
 mov r8, 21
 lea r9, [rsp+40]
 mov qword [rsp+32], 0
 call [WriteFile]
-add rsp, 56
+add rsp, 48
 jmp exit
 
-error2:
-sub rsp, 56
+error2:							; compile.txt not modifiable
+sub rsp, 48
 mov rcx, [stdhandleout]
 lea rdx, [errorcode2]
 mov r8, 26
 lea r9, [rsp+40]
 mov qword [rsp+32], 0
 call [WriteFile]
-add rsp, 56
+add rsp, 48
 jmp exit
 
-error3:
-sub rsp, 56
+error3:							; invalid syntax
+sub rsp, 48
 mov rcx, [stdhandleout]
 lea rdx, [errorcode3]
 mov r8, 14
 lea r9, [rsp+40]
 mov qword [rsp+32], 0
 call [WriteFile]
-add rsp, 56
+add rsp, 48
+jmp exit
+
+error4:							; imports must be at the start of the file
+sub rsp, 48
+mov rcx, [stdhandleout]
+lea rdx, [errorcode4]
+mov r8, 40
+lea r9, [rsp+40]
+mov qword [rsp+32], 0
+call [WriteFile]
+add rsp, 48
+jmp exit
+
+intstring:						; debug!!
+mov rbx, 10
+lea rcx, [intbuffer]
+loopstring:
+xor rdx, rdx
+div rbx
+add rdx, 48
+mov [rcx], dl
+inc rcx
+test rax, rax
+jnz loopstring
+sub rsp, 48
+mov rcx, [stdhandleout]
+lea rdx, [intbuffer]
+mov r8, 30
+lea r9, [rsp+40]
+mov qword [rsp+32], 0
+call [WriteFile]
+add rsp, 48
 jmp exit
 
 endofcode: times (0x10000-(endofcode-start)) db 0
