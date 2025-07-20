@@ -1,2 +1,3 @@
-#"kernel32.dll"(CloseHandle,CreateFileA, ExitProcess GetCommandLineA GetStdHandle ReadFile SetFilePointer WriteFile)
-	# 		"kernel64.dll" (CloseHandle , CreateFileA)
+@ "kernel32.dll" (CloseHandle,CreateFileA, ExitProcess GetCommandLineA GetStdHandle ReadFile SetFilePointer WriteFile)
+	@ 		"kernel64.dll" (CloseHandle , CreateFileA, hello)
+6%

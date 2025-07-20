@@ -108,13 +108,46 @@ dd 0x1078						; Import Address Table RVA
 times 20 db 0
 
 ; DATA
+store times 0x1000 db 0
+store2 times 0x1000 db 0
+readbuffer times 0x500 db 0
+writebuffer times 0x500 db 0
+registerlist times 16 dq 0
+symbollist dq 0
+relocationlist dq 0
 stdhandleout dq 0
 readfilehandle dq 0
 writefilehandle dq 0
-readbuffer times 0x500 db 0
-writebuffer times 0x500 db 0
-symbolbuffer times 0x800 db 0
-store times 0x1000 db 0
+return dq 0
+return2 dq 0
+
+exponent32:
+dd 1.0
+dd 0.1
+dd 0.01
+dd 0.001
+dd 0.0001
+dd 0.00001
+dd 0.000001
+dd 0.0000001
+dd 0.00000001
+dd 0.000000001
+dd 0.0000000001
+dd 0.00000000001
+
+exponent64:
+dq 1.0
+dq 0.1
+dq 0.01
+dq 0.001
+dq 0.0001
+dq 0.00001
+dq 0.000001
+dq 0.0000001
+dq 0.00000001
+dq 0.000000001
+dq 0.0000000001
+dq 0.00000000001
 
 readfilename db "compile.txt", 0
 writefilename db "compile.exe", 0
@@ -123,12 +156,16 @@ errorcode1 db "Compile.txt not found", 0
 errorcode2 db "Compile.exe not modifiable", 0
 errorcode3 db "Invalid syntax", 0
 errorcode4 db "Imports must be at the start of the file", 0
+errorcode5 db "New addresses must be declared before any function", 0
+errorcode6 db "Address does not exist", 0
 
 intbuffer times 30 db 0
-
-
+intbuffer2 times 30 db 0
+intbuffer3 times 30 db 0
 
 endoftext: times (0x8000-(endoftext-start)) db 0
+
+
 
 ; CODE
 BITS 64
@@ -234,15 +271,15 @@ add rsp, 48
 test rax, rax
 jz exit
 
-lea rsi, [readbuffer]			; initialize read and write addresses and character register
-mov byte [rsi+rax], 0			; null-terminate readbuffer
+lea rsi, [readbuffer]			; initialize read and write addresses and al
+mov byte [rsi+rax], 255			; add gibberish to the last read character
 lea rdi, [writebuffer]
 mov al, [rsi]
 
 
 
-cmp al, '#'						; check if dll statement
-jnz nodll
+cmp al, '@'						; check if dll statement
+jnz function
 bt rbp, 0
 jc error4
 
@@ -251,36 +288,33 @@ inc rsi
 mov al, [rsi]
 cmp al, 34
 jnz dllfirstquote
-inc rsi							; find last quote while copying the name in writebuffer
+lea rbx, [store]				; find last quote while copying the name in store
+inc rsi
 mov al, [rsi]
-mov rbx, rdi					; save current write position to copy the string in the stack later
 dlllastquote:
-mov [rdi], al
-inc rdi
+mov [rbx], al
+inc rbx
 inc rsi
 mov al, [rsi]
 cmp al, 34
 jnz dlllastquote
-mov rdx, rdi					; copy dll name in stack
-sub rdx, rbx
-sub rsp, rdx
+lea rcx, [store]				; copy dll name in stack
+sub rbx, rcx
+sub rsp, rbx
 and rsp, -16
-xor rcx, rcx
+xor rdx, rdx
 dllstackcopy:
-mov al, [rbx+rcx]
-mov [rsp+rcx], al
-inc rcx
-cmp rcx, rdx
+mov al, [rcx+rdx]
+mov [rsp+rdx], al
+inc rdx
+cmp rdx, rbx
 jnz dllstackcopy
-mov byte [rsp+rcx], 0			; null-terminate stack string
-lea r11, [dllcreated]			; create dll symbol
+mov byte [rsp+rdx], 0			; null-terminate stack string
+lea r8, [dllcreated]			; create dll symbol
+mov [return], r8
 jmp createsymbol
-dllcreated:						; make symbol description
-mov rax, 15						; type field is 15 for dll
-mov rbx, r13					; stack/code address field is written bytes (r13)
-shl rbx, 32
-and rax, rbx
-mov [rsp+8], rax
+dllcreated:						; write symbol description
+mov qword [rsp+8], 15
 
 dllopenparenthesis:				; find open parenthesis
 inc rsi
@@ -294,14 +328,11 @@ cmp al, 33
 jc dllprefunction
 cmp al, 44
 jz dllprefunction
-mov word [rdi], 0				; add function to writebuffer
-add rdi, 2
-mov rbx, rdi					; save rdi to put in stack/code address field and copy function to stack later
-mov al, [rsi]
+lea rbx, [store]				; copy function in store
 dllfunction:
-mov [rdi], al
+mov [rbx], al
+inc rbx
 inc rsi
-inc rdi
 mov al, [rsi]
 cmp al, 33
 jc dllfunctionend
@@ -311,87 +342,517 @@ cmp al, 44
 jz dllfunctionend
 jmp dllfunction
 dllfunctionend:
-mov rdx, rdi					; copy the function name in stack
-sub rdx, rbx
-sub rsp, rdx
-and rsp, -16
-xor rcx, rcx
-dllfunctionstackcopy:
-mov al, [rbx+rcx]
-mov [rsp+rcx], al
-inc rcx
-cmp rcx, rdx
-jnz dllfunctionstackcopy
-lea r11, [dllfunctioncreated]
-jmp createsymbol
-dllfunctioncreated:				; make symbol description
-mov rax, 16						; type field is 16 for dllfunctions
-sub rbx, 2						; stack/code address field is written bytes (r13) plus relative position in writebuffer
-lea rcx, [writebuffer]
+lea rcx, [store]				; copy function name in stack
 sub rbx, rcx
-add rbx, r13
-sub rbx, 2
-shl rbx, 32
-and rax, rbx
-mov [rsp+8], rax
+sub rsp, rbx
+and rsp, -16
+xor rdx, rdx
+dllfunctionstackcopy:
+mov al, [rcx+rdx]
+mov [rsp+rdx], al
+inc rdx
+cmp rdx, rbx
+jnz dllfunctionstackcopy
+mov byte [rsp+rdx], 0			; null-terminate stack string
+lea r8, [dllfunctioncreated]	; create dll symbol
+mov [return], r8
+jmp createsymbol
+dllfunctioncreated:
+mov qword [rsp+8], 16			; write symbol description
 mov al, [rsi]					; check if there's the last parenthesis
 cmp al, 41
 jnz dllprefunction
-mov byte [rdi], 0				; null-terminate last function name
-inc rdi
+inc rsi
+jmp poststatement
 
-dllnextstatement:				; go to next statement after dll statement
+function:
+cmp bl, '$'
+jnz call
+
+call:
+cmp bl, ':'
+jnz if
+
+if:
+cmp bl, '?'
+jnz address
+
+address:						; check if address statement
+cmp al, 46
+jz addressvalid
+cmp al, '0'
+jc error3
+cmp al, '9'+1
+jc addressvalid
+cmp al, 'A'
+jc error3
+cmp al, 'Z'+1
+jc addressvalid
+cmp al, 'a'
+jc error3
+cmp al, 'z'+1
+jc addressvalid
+jmp error3
+addressvalid:					; statement is an address statement
+lea rax, [addressdestination]
+mov [return], rax
+jmp arithmetic
+addressdestination:
+
+poststatement:					; skip whitespaces
+mov al, [rsi]
+cmp al, 33
+jnc newstatement
+inc rsi
+jmp poststatement
+
+arithmetic:						; transform the arithmetic sequence at rsi into machine code in rdi, until a character that doesn't make sense is read, then jumps to r11
+lea rbx, [store2]				; load store2 index in rbx
+xor rcx, rcx					; track priority boost from brackets and parenthesis
+mathfirstchar:					; get operand type based on the first character of the operand
+mov al, [rsi]
+cmp al, 33
+jz mathnot
+cmp al, 40
+jz mathopenparenthesis
+cmp al, 41
+jz mathclosedparenthesis
+cmp al, 45
+jz mathnegation
+cmp al, 46
+jz mathimmediate
+cmp al, '0'
+jc mathexit
+cmp al, '9'+1
+jc mathimmediate
+cmp al, 'A'
+jc mathexit
+cmp al, 'Z'+1
+jc mathaddress
+cmp al, 91
+jz mathopenbracket
+cmp al, 93
+jz mathclosedbracket
+cmp al, 95
+jz mathaddress
+cmp al, 'a'
+jc mathexit
+cmp al, 'z'+1
+jc mathaddress
+cmp al, 33						; whitespace
+jnc mathend
+inc rsi
+jmp mathfirstchar
+
+mathnot:						; unary !
+mov al, [rsi+1]					; check if unary operator preceeds variable or immediate
+cmp al, 46
+jz mathimmediate
+cmp al, '0'
+jc mathaddress
+cmp al, '9'+1
+jc mathimmediate
+mathnotvariable:
+mov rax, 20
+shl rax, 8
+add rax, 11
+add rax, rcx
+mov [rbx], rax
+add rbx, 16
+inc rsi
+jmp mathfirstchar
+
+mathnegation:					; unary -
+mov al, [rsi+1]					; check if unary operator preceeds variable or immediate
+cmp al, 46
+jz mathimmediate
+cmp al, '0'
+jc mathnegationvariable
+cmp al, '9'+1
+jc mathimmediate
+mathnegationvariable:
+mov rax, 19
+shl rax, 8
+add rax, 11
+add rax, rcx
+mov [rbx], rax
+add rbx, 16
+inc rsi
+jmp mathfirstchar
+
+mathimmediate:					; immediate as operand
+xor r9, r9						; exponent tracker
+xor r10, r10					; integer tracker
+xor rdx, rdx					; decimal tracker
+xor r8, r8						; negative & type tracker
+mov al, [rsi]
+cmp al, 45						; check if negative
+jnz mathimmediatetype
+bts r8, 63
+inc rsi
+mathimmediatetype:				; check prefix zeros for type
+inc r8
+movzx rax, byte [rsi]
+cmp al, '0'
+jnz mathimmediateinteger
+inc rsi
+jmp mathimmediatetype
+mathimmediateinteger:			; calculate integer part
+movzx rax, byte [rsi]
+cmp al, 46
+jz mathimmediatedecimaltype
+cmp al, '0'
+jc mathimmediateintegerend
+cmp al, '9'+1
+jnc mathimmediateintegerend
+lea r10, [r10+r10]
+lea r10, [r10+r10*4]
+sub al, 48
+add r10, rax
+inc rsi
+jmp mathimmediateinteger
+mathimmediatedecimaltype:		; calculate decimal part
+add r8, 4
+mathimmediatedecimal:
+inc rsi
+movzx rax, byte [rsi]
+cmp al, '0'
+jc mathimmediatedecimalend
+cmp al, '9'+1
+jnc mathimmediatedecimalend
+lea rdx, [rdx+rdx]
+lea rdx, [rdx+rdx*4]
+sub al, 48
+add rdx, rax
+inc r9
+jmp mathimmediatedecimal
+mathimmediatedecimalend:		; compile the float
+bt r8, 63
+jnc mathimmediatedecimalendpositive
+neg r10
+btr r8, 63
+mathimmediatedecimalendpositive:
+cmp r8, 6
+jz mathimmediatedecimalendfloat32
+cvtsi2sd xmm0, r10				; float64
+cvtsi2sd xmm1, rdx
+lea r10, [exponent64]
+movsd xmm2, qword [r10+r8*8]
+mulsd xmm1, xmm2
+addsd xmm0, xmm1
+movsd qword [rbx+8], xmm0
+shl r8, 16
+mov [rbx], r8
+jmp mathoperator
+mathimmediatedecimalendfloat32:	; float32
+cvtsi2ss xmm0, r10
+cvtsi2ss xmm1, rdx
+lea r10, [exponent32]
+movss xmm2, dword [r10+r8*4]
+mulss xmm1, xmm2
+addss xmm0, xmm1
+movss dword [rbx+8], xmm0
+shl r8, 16
+mov [rbx], r8
+jmp mathoperator
+mathimmediateintegerend:		; compile the integer
+bt r8, 63
+jnc mathimmediateintegerendpositive
+neg r10
+btr r8, 63
+mathimmediateintegerendpositive:
+shl r8, 16
+mov [rbx], r8
+mov [rbx+8], r10
+jmp mathoperator
+
+mathaddress:					; address as operand
+lea r8, [store]					; copy address in store
+mov al, [rsi]
+mathaddresscopy:
+mov [r8], al
+inc r8
 inc rsi
 mov al, [rsi]
-test al, al
-jz newstatement
-cmp al, 33
-jc dllnextstatement
-cmp al, 35
-jz newstatement
-								; next statement is not a dll statement (to be continued)
-jmp newstatement
-nodll:
-cmp bl, '@'
-jnz noaddress
+cmp al, '0'
+jc mathaddresscopyend
+cmp al, '9'+1
+jc mathaddresscopy
+cmp al, 'A'
+jc mathaddresscopyend
+cmp al, 'Z'+1
+jc mathaddresscopy
+cmp al, 95
+jz mathaddresscopy
+cmp al, 'a'
+jc mathaddresscopyend
+cmp al, 'z'+1
+jc mathaddresscopy
+mathaddresscopyend:
+mov byte [r8], 0
+lea rdx, [store]				; find the symbol of the address
+mov rax, [return]
+lea r11, [mathaddresssymbolfound]
+mov [return], r11
+jmp findsymbol
+mathaddresssymbolfound:
+test rdx, rdx					; check if symbol didn't exist
+jump: jmp jump
+;jz r11
+mov [rbx+8], rdx				; make arithmetic entry with pointer to symbol
+jmp mathoperator
 
-noaddress:
-cmp bl, '$'
-jnz nofunction
+mathopenbracket:				; [ as "operand"
+add rcx, 12
+mov rax, 21
+shl rax, 8
+add rax, rcx
+mov [rbx], rax
+add rbx, 16
+inc rsi
+jmp mathfirstchar
 
-nofunction:
-cmp bl, ':'
-jnz nocall
+mathopenparenthesis:			; (
+add rcx, 12
+inc rsi
+jmp mathfirstchar
 
-nocall:
-cmp bl, '?'
-jnz error3
+mathoperator:					; add operator and its priority to the arithmetic entry
+mov al, [rsi]
+cmp al, '|'
+jz mathor
+cmp al, '&'
+jz mathand
+cmp al, '='
+jz mathequal
+cmp al, '~'
+jz mathunequal
+cmp al, '<'
+jz mathlesser
+cmp al, '>'
+jz mathgreater
+cmp al, '+'
+jz mathadd
+cmp al, '-'
+jz mathsubstract
+cmp al, '*'
+jz mathmultiply
+cmp al, '/'
+jz mathdivide
+cmp al, '%'
+jz mathmodulo
+cmp al, ']'
+jz mathclosedbracket
+cmp al, ')'
+jz mathclosedparenthesis
+cmp al, 33						; whitespace
+jnc mathend
+inc rsi
+jmp mathoperator
 
-createsymbol:					; links the symbol name pointed by rsp to the symbol table (new symbol is at rsp, after doing rsp-32) and returns to r11
-mov r10, rsp
-mov r9, 5381					; hash the string in r10
-movzx r8, byte [r10]
-hash9:
-lea r9, [r9+r9*8+0]
-add r9, r8
-inc r10
-movzx r8, byte [r10]
-test r8, r8
-jnz hash9
-and r9, 0xFF
-lea r10, [symbolbuffer]			; find last symbol in respective bucket
-lea r10, [r10+r9*8+0]
+mathclosedbracket:				; ]
+sub rcx, 12
+inc rsi
+jmp mathoperator
+mathclosedparenthesis:			; )
+sub rcx, 12
+inc rsi
+jmp mathoperator
+
+mathor:							; (1) or
+mov al, [rsi+1]
+cmp al, '|'
+jz mathbitwiseor
+cmp al, '&'
+jz mathbitwisexor
+mov rax, 1
+shl rax, 8
+add rax, 1
+jmp mathoperatorend
+mathand:						; (2) and
+mov al, [rsi+1]
+cmp al, '&'
+jz mathbitwiseand
+mov rax, 2
+shl rax, 8
+add rax, 2
+jmp mathoperatorend
+mathbitwiseor:					; (3) bitwise or
+mov rax, 3
+shl rax, 8
+add rax, 3
+inc rsi
+jmp mathoperatorend
+mathbitwisexor:					; (4) bitwise xor
+mov rax, 4
+shl rax, 8
+add rax, 4
+inc rsi
+jmp mathoperatorend
+mathbitwiseand:					; (5) bitwise and
+mov rax, 5
+shl rax, 8
+add rax, 5
+inc rsi
+jmp mathoperatorend
+mathequal:						; (6) equal
+mov rax, 6
+shl rax, 8
+add rax, 6
+jmp mathoperatorend
+mathunequal:					; unequal
+mov rax, 7
+shl rax, 8
+add rax, 6
+jmp mathoperatorend
+mathlesser:						; (7) lesser
+mov al, [rsi+1]
+cmp al, '='
+jz mathlesserorequal
+cmp al, '<'
+jz mathshiftleft
+mov rax, 8
+shl rax, 8
+add rax, 7
+jmp mathoperatorend
+mathgreater:					; greater
+mov al, [rsi+1]
+cmp al, '='
+jz mathgreaterorequal
+cmp al, '>'
+jz mathshiftright
+mov rax, 9
+shl rax, 8
+add rax, 7
+jmp mathoperatorend
+mathlesserorequal:				; lesser or equal
+mov rax, 10
+shl rax, 8
+add rax, 7
+inc rsi
+jmp mathoperatorend
+mathgreaterorequal:				; greater or equal
+mov rax, 11
+shl rax, 8
+add rax, 7
+inc rsi
+jmp mathoperatorend
+mathshiftleft:					; (8) shift left
+mov rax, 12
+shl rax, 8
+add rax, 8
+inc rsi
+jmp mathoperatorend
+mathshiftright:					; shift right
+mov rax, 13
+shl rax, 8
+add rax, 8
+inc rsi
+jmp mathoperatorend
+mathadd:						; (9) add
+mov rax, 14
+shl rax, 8
+add rax, 9
+jmp mathoperatorend
+mathsubstract:					; substract
+mov rax, 15
+shl rax, 8
+add rax, 9
+jmp mathoperatorend
+mathmultiply:					; (10) multiply
+mov rax, 16
+shl rax, 8
+add rax, 10
+jmp mathoperatorend
+mathdivide:						; divide
+mov rax, 17
+shl rax, 8
+add rax, 10
+jmp mathoperatorend
+mathmodulo:						; modulo
+mov rax, 18
+shl rax, 8
+add rax, 10
+jmp mathoperatorend
+mathoperatorend:				; end of operator to avoid repetition of code
+add rax, rcx
+mov rdx, [rbx]
+add rdx, rax
+mov [rbx], rdx
+add rbx, 16
+inc rsi
+jmp mathfirstchar
+
+mathend:						; translate arithmetic table to machine code
+lea rbx, [store2]
+check:
+movzx rax, byte [rbx+1]
+mov r8, 10
+lea r9, [intbuffer]
+loopstring2:
+xor rdx, rdx
+div r8
+add rdx, 48
+mov [r9], dl
+inc r9
+test rax, rax
+jnz loopstring2
+mov byte [r9], 10
+sub rsp, 48
+mov rcx, [stdhandleout]
+lea rdx, [intbuffer]
+mov r8, 3
+lea r9, [rsp+40]
+mov qword [rsp+32], 0
+call [WriteFile]
+add rsp, 48
+add rbx, 16
+mov rax, [rbx]
+test rax, rax
+jnz check
+jmp exit
+
+mathexit:
+mov r8, [return]
+jmp r8
+
+createsymbol:					; links the name pointed by rsp (null-terminated) to the symbol list (new symbol is at rsp, after doing rsp-16) and returns to return
+lea r11, [symbollist]
 searchlastsymbol:
-mov r9, r10
-mov r10, [r10]
-test r10, r10
+mov r10, r11
+mov r11, [r11]
+test r11, r11
 jnz searchlastsymbol
-sub rsp, 16						; create new symbol and link to last symbol
-mov [r9], rsp
+sub rsp, 16
+mov [r10], rsp
 mov qword [rsp], 0
+mov r11, [return]
+jmp r11
+
+findsymbol:						; returns the address of the symbol with the name pointed by rdx (null-terminated) in rdx and returns to return
+lea r11, [symbollist]
+searchsymbol:
+test r11, r11
+jz symbolnotfound
+mov r11, [r11]
+xor r10, r10
+matchsymbolcharacter:
+mov r9b, [r11+r10+16]
+cmp r9b, [rdx+r10]
+jnz searchsymbol
+inc r10
+test r9b, r9b
+jnz matchsymbolcharacter
+mov rdx, r11
+mov r11, [return]
+jmp r11
+symbolnotfound:
+xor rdx, rdx
+mov r11, [return]
 jmp r11
 
 exit:							; exit
+exit2:
 sub rsp, 32
 xor rcx, rcx
 call [ExitProcess]
@@ -440,6 +901,28 @@ call [WriteFile]
 add rsp, 48
 jmp exit
 
+error5:							; new addresses must be declared before any function
+sub rsp, 48
+mov rcx, [stdhandleout]
+lea rdx, [errorcode5]
+mov r8, 50
+lea r9, [rsp+40]
+mov qword [rsp+32], 0
+call [WriteFile]
+add rsp, 48
+jmp exit
+
+error6:							; address does not exist
+sub rsp, 48
+mov rcx, [stdhandleout]
+lea rdx, [errorcode6]
+mov r8, 22
+lea r9, [rsp+40]
+mov qword [rsp+32], 0
+call [WriteFile]
+add rsp, 48
+jmp exit
+
 intstring:						; debug!!
 mov rbx, 10
 lea rcx, [intbuffer]
@@ -459,6 +942,62 @@ lea r9, [rsp+40]
 mov qword [rsp+32], 0
 call [WriteFile]
 add rsp, 48
+jmp exit
+
+printsymbolstring:
+mov rbx, [symbollist]
+printsymbolinit:
+mov rcx, rbx
+add rcx, 16
+lea r8, [intbuffer]
+mov al, [rcx]
+symbolprintloop:
+mov [r8], al
+inc r8
+inc rcx
+mov al, [rcx]
+test al, al
+jnz symbolprintloop
+mov byte [r8], 0
+sub rsp, 48
+mov rcx, [stdhandleout]
+lea rdx, [intbuffer]
+mov r8, 30
+lea r9, [rsp+40]
+mov qword [rsp+32], 0
+call [WriteFile]
+add rsp, 48
+mov rbx, [rbx]
+test rbx, rbx
+jnz printsymbolinit
+jmp exit2
+
+printsymboltype:
+mov rbx, [symbollist]
+printsymbolinit2:
+mov rcx, 10
+lea r8, [intbuffer]
+mov rax, [rbx+8]
+symbolprintloop2:
+xor rdx, rdx
+div rcx
+add rdx, 48
+mov [r8], dl
+inc r8
+test rax, rax
+jnz symbolprintloop2
+sub rsp, 48
+mov rcx, [stdhandleout]
+lea rdx, [intbuffer]
+mov r8, 30
+lea r9, [rsp+40]
+mov qword [rsp+32], 0
+call [WriteFile]
+add rsp, 48
+mov rbx, [rbx]
+inc r12
+test rbx, rbx
+jnz printsymbolinit2
 jmp exit
 
 endofcode: times (0x10000-(endofcode-start)) db 0
