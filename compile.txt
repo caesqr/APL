@@ -1,3 +1,4 @@
 @ "kernel32.dll" (CloseHandle,CreateFileA, ExitProcess GetCommandLineA GetStdHandle ReadFile SetFilePointer WriteFile)
 	@ 		"kernel64.dll" (CloseHandle , CreateFileA, hello)
-6%
+	hey[199]
+hey|5-8*9/5-2

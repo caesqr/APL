@@ -119,7 +119,7 @@ stdhandleout dq 0
 readfilehandle dq 0
 writefilehandle dq 0
 return dq 0
-return2 dq 0
+temp dq 0
 
 exponent32:
 dd 1.0
@@ -148,6 +148,29 @@ dq 0.00000001
 dq 0.000000001
 dq 0.0000000001
 dq 0.00000000001
+
+table:
+dq encodeor
+dq encodeand
+dq encodebitwiseor
+dq encodebitwisexor
+dq encodebitwiseand
+dq encodeequal
+dq encodeunequal
+dq encodelesser
+dq encodegreater
+dq encodelesserequal
+dq encodegreaterequal
+dq encodeshiftleft
+dq encodeshiftright
+dq encodeadd
+dq encodesubstract
+dq encodemultiply
+dq encodedivide
+dq encodemodulo
+dq encodenegation
+dq encodenot
+dq encodebracket
 
 readfilename db "compile.txt", 0
 writefilename db "compile.exe", 0
@@ -237,7 +260,7 @@ xor rbp, rbp					; status flags
 xor r12, r12					; read bytes
 xor r13, r13					; written bytes
 xor r14, r14					; (runtime) register cycle
-xor r15, r15					; (runtime) stack counter
+mov r15, 1000					; (runtime) stack counter
 
 newstatement:
 sub rsp, 48						; write previous statement to output file
@@ -378,26 +401,88 @@ cmp bl, '?'
 jnz address
 
 address:						; check if address statement
-cmp al, 46
-jz addressvalid
-cmp al, '0'
-jc error3
-cmp al, '9'+1
-jc addressvalid
 cmp al, 'A'
 jc error3
 cmp al, 'Z'+1
 jc addressvalid
+cmp al, 95						; underscore
+jz addressvalid
 cmp al, 'a'
 jc error3
 cmp al, 'z'+1
 jc addressvalid
 jmp error3
-addressvalid:					; statement is an address statement
-lea rax, [addressdestination]
+addressvalid:
+mov rbx, rsi					; save rsi if the destination already exists
+lea rcx, [store]
+addresscheck:					; check if statement is an initialization by finding non-alphabetical characters
+mov [rcx], al
+inc rcx
+inc rsi
+mov al, [rsi]
+cmp al, '0'
+jc addressupdate
+cmp al, '9'+1
+jc addresscheck
+cmp al, 58
+jz addressupdate
+cmp al, 'A'
+jc addressupdate
+cmp al, 'Z'+1
+jc addresscheck
+cmp al, 91
+jz addressinitialization
+cmp al, 95
+jz addresscheck
+cmp al, 'a'
+jc addressupdate
+cmp al, 'z'+1
+jc addresscheck
+jmp addressupdate
+
+addressinitialization:			; create new address
+mov byte [rcx], 0
+sub rbx, rsi					; create new symbol for the destination
+neg rbx
+sub rsp, rbx
+and rsp, -16
+lea rbx, [store]
+xor rcx, rcx
+mov al, [rbx]
+addresscopy:					; copy destination name in rsp
+mov [rsp+rcx], al
+inc rcx
+mov al, [rbx+rcx]
+test al, al
+jnz addresscopy
+mov byte [rsp+rcx], 0
+lea rax, [addresssymbolcreated]
+mov [return], rax
+jmp createsymbol
+addresssymbolcreated:
+xor rbx, rbx
+addressgetsize:					; get address size
+inc rsi
+movzx rax, byte [rsi]
+cmp al, 93
+jz addressgotsize
+lea rbx, [rbx+rbx]
+lea rbx, [rbx+rbx*4]
+sub al, 48
+add rbx, rax
+jmp addressgetsize
+addressgotsize:
+sub r15, rbx					; update symbol
+mov qword [rsp+8], r15
+inc rsi
+jmp poststatement
+
+addressupdate:					; the destination already exists
+mov rsi, rbx
+lea rax, [addressdestinationdone]
 mov [return], rax
 jmp arithmetic
-addressdestination:
+addressdestinationdone:
 
 poststatement:					; skip whitespaces
 mov al, [rsi]
@@ -422,11 +507,11 @@ jz mathnegation
 cmp al, 46
 jz mathimmediate
 cmp al, '0'
-jc mathexit
+jc error3
 cmp al, '9'+1
 jc mathimmediate
 cmp al, 'A'
-jc mathexit
+jc error3
 cmp al, 'Z'+1
 jc mathaddress
 cmp al, 91
@@ -436,11 +521,11 @@ jz mathclosedbracket
 cmp al, 95
 jz mathaddress
 cmp al, 'a'
-jc mathexit
+jc error3
 cmp al, 'z'+1
 jc mathaddress
 cmp al, 33						; whitespace
-jnc mathend
+jnc error3
 inc rsi
 jmp mathfirstchar
 
@@ -595,14 +680,12 @@ mov rax, [return]
 lea r11, [mathaddresssymbolfound]
 mov [return], r11
 jmp findsymbol
-mathaddresssymbolfound:
-test rdx, rdx					; check if symbol didn't exist
-jump: jmp jump
-;jz r11
-mov [rbx+8], rdx				; make arithmetic entry with pointer to symbol
+mathaddresssymbolfound:			; check if symbol didn't exist
+test rdx, rdx
+jz error6
 jmp mathoperator
 
-mathopenbracket:				; [ as "operand"
+mathopenbracket:				; [
 add rcx, 12
 mov rax, 21
 shl rax, 8
@@ -646,7 +729,7 @@ jz mathclosedbracket
 cmp al, ')'
 jz mathclosedparenthesis
 cmp al, 33						; whitespace
-jnc mathend
+jnc encode
 inc rsi
 jmp mathoperator
 
@@ -783,10 +866,10 @@ add rbx, 16
 inc rsi
 jmp mathfirstchar
 
-mathend:						; translate arithmetic table to machine code
+mathends:					; translate arithmetic table to machine code
 lea rbx, [store2]
 check:
-movzx rax, byte [rbx+1]
+movzx rax, byte [rbx]
 mov r8, 10
 lea r9, [intbuffer]
 loopstring2:
@@ -797,7 +880,7 @@ mov [r9], dl
 inc r9
 test rax, rax
 jnz loopstring2
-mov byte [r9], 10
+mov byte [r9], '-'
 sub rsp, 48
 mov rcx, [stdhandleout]
 lea rdx, [intbuffer]
@@ -812,9 +895,155 @@ test rax, rax
 jnz check
 jmp exit
 
-mathexit:
-mov r8, [return]
-jmp r8
+encode:							; translate arithmetic table to machine code
+mov byte [rbx], 1				; put last arithmetic entry at priority 1
+encodestart:
+lea rax, [store2-16]
+mathfindoperand1:				; get first operand
+add rax, 16
+mov bl, [rax]
+test bl, bl
+jz mathfindoperand1
+mov rbx, rax
+mov cl, [rax]
+mathfindoperand2:				; get second operand or go to mathend
+add rbx, 16
+lea rdx, [store2+0x1000]
+cmp rbx, rdx
+jz mathend
+mov dl, [rbx]
+test dl, dl
+jz mathfindoperand2
+cmp cl, dl						; check if second operand's priority is equal or lower
+jc mathfindoperand1
+mov cl, [rax+1]					; find encode path with operator
+
+mov qword [rax], 0
+mov qword [rax+8], 0
+
+cmp cl, 1
+jz encodeor
+cmp cl, 2
+jz encodeand
+cmp cl, 3
+jz encodebitwiseor
+cmp cl, 4
+jz encodebitwisexor
+cmp cl, 5
+jz encodebitwiseand
+cmp cl, 6
+jz encodeequal
+cmp cl, 7
+jz encodeunequal
+cmp cl, 8
+jz encodelesser
+cmp cl, 9
+jz encodegreater
+cmp cl, 10
+jz encodelesserequal
+cmp cl, 11
+jz encodegreaterequal
+cmp cl, 12
+jz encodeshiftleft
+cmp cl, 13
+jz encodeshiftright
+cmp cl, 14
+jz encodeadd
+cmp cl, 15
+jz encodesubstract
+cmp cl, 16
+jz encodemultiply
+cmp cl, 17
+jz encodedivide
+cmp cl, 18
+jz encodemodulo
+cmp cl, 19
+jz encodenegation
+cmp cl, 20
+jz encodenot
+cmp cl, 21
+jz encodebracket
+
+encodeor:
+mov byte [intbuffer], '|'
+jmp here
+encodeand:
+mov byte [intbuffer], '&'
+jmp here
+encodebitwiseor:
+mov word [intbuffer], '||'
+jmp here
+encodebitwisexor:
+mov word [intbuffer], '|&'
+jmp here
+encodebitwiseand:
+mov word [intbuffer], '&&'
+jmp here
+encodeequal:
+mov byte [intbuffer], '='
+jmp here
+encodeunequal:
+mov byte [intbuffer], '~'
+jmp here
+encodelesser:
+mov byte [intbuffer], '<'
+jmp here
+encodegreater:
+mov byte [intbuffer], '>'
+jmp here
+encodelesserequal:
+mov word [intbuffer], '<='
+jmp here
+encodegreaterequal:
+mov word [intbuffer], '<='
+jmp here
+encodeshiftleft:
+mov word [intbuffer], '<<'
+jmp here
+encodeshiftright:
+mov word [intbuffer], '>>'
+jmp here
+encodeadd:
+mov byte [intbuffer], '+'
+jmp here
+encodesubstract:
+mov byte [intbuffer], '-'
+jmp here
+encodemultiply:
+mov byte [intbuffer], '*'
+jmp here
+encodedivide:
+mov byte [intbuffer], '/'
+jmp here
+encodemodulo:
+mov byte [intbuffer], '%'
+jmp here
+encodenegation:
+mov byte [intbuffer], '-'
+jmp here
+encodenot:
+mov byte [intbuffer], '!'
+jmp here
+encodebracket:
+mov byte [intbuffer], '['
+jmp here
+
+here:
+mov qword [rax], 0
+mov qword [rax+8], 0
+sub rsp, 48
+mov rcx, [stdhandleout]
+lea rdx, [intbuffer]
+mov r8, 4
+lea r9, [rsp+40]
+mov qword [rsp+32], 0
+call [WriteFile]
+add rsp, 48
+jmp encodestart
+
+
+mathend:
+jmp exit
 
 createsymbol:					; links the name pointed by rsp (null-terminated) to the symbol list (new symbol is at rsp, after doing rsp-16) and returns to return
 lea r11, [symbollist]
@@ -829,16 +1058,16 @@ mov qword [rsp], 0
 mov r11, [return]
 jmp r11
 
-findsymbol:						; returns the address of the symbol with the name pointed by rdx (null-terminated) in rdx and returns to return
+findsymbol:						; returns the address of the symbol with the name pointed by rdx (null-terminated) in rdx and returns to return. if no symbol is found, rdx is 0
 lea r11, [symbollist]
 searchsymbol:
+mov r11, [r11]
 test r11, r11
 jz symbolnotfound
-mov r11, [r11]
 xor r10, r10
 matchsymbolcharacter:
 mov r9b, [r11+r10+16]
-cmp r9b, [rdx+r10]
+cmp r9b, byte [rdx+r10]
 jnz searchsymbol
 inc r10
 test r9b, r9b
@@ -852,7 +1081,6 @@ mov r11, [return]
 jmp r11
 
 exit:							; exit
-exit2:
 sub rsp, 32
 xor rcx, rcx
 call [ExitProcess]
@@ -970,9 +1198,9 @@ add rsp, 48
 mov rbx, [rbx]
 test rbx, rbx
 jnz printsymbolinit
-jmp exit2
+jmp exit
 
-printsymboltype:
+printsymboladdress:
 mov rbx, [symbollist]
 printsymbolinit2:
 mov rcx, 10
@@ -995,7 +1223,6 @@ mov qword [rsp+32], 0
 call [WriteFile]
 add rsp, 48
 mov rbx, [rbx]
-inc r12
 test rbx, rbx
 jnz printsymbolinit2
 jmp exit
