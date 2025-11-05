@@ -1,0 +1,23 @@
+$: dll import statement
+#: initialize data statement
+
+what's working so far:
+
+1. $dll.dll functionname functionname
+imports the dll and the listed functions in the output .exe
+
+2. #label 5 256 "Hello" 0.25 0x2c56 -0b0110 -1
+initializes the values right after the dll imports, in the data section. the first value's address will be identifiable with the label. values are either numbers or strings. a number will be initialized as 8-bit if between 0 and 255 (inclusive), 32-bit if between -2^31 and 2^31-1 (inclusive) or 64-bit. hexadecimal (0x-) and binary (0b-) notations are accepted. a number can also be a 32-bit float if written like: 1.5, -0.6, 5e+1, 3., 3.e-2. IMPORTANT the float 0.0 is represented as 00 00 00 00 in hexadecimal, and my compiler has no way of knowing that this should be interpreted as a 32-bit float and not a 8-bit value, so if you want to write 0.0 as a float, write 0 0 0 0 (aka. four 8-bit zeroes)
+in this case, the initialized values in hexadecimal are:
+05 <- 5
+00 01 00 00 <- 256
+48 65 6C 6C 6F <- "Hello"
+00 00 80 3E <- 0.25
+56 2C 00 00 <- 0x2c56
+FA FF FF FF <- -0b0110
+FF FF FF FF <- -1
+
+3. #label2 `5 1 3 5 "e"
+right after a label of an initialized value, you can for example write `5 to tell the compiler to repeat the following values 5 times. a repeat number of 0 will load the values once
+
+every element inside statements are separated with a space, a tab or a newline, but never two or more of these. between statements, there can be any amount of spaces, tabs and newlines
